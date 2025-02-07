@@ -144,7 +144,7 @@ function App() {
 			<iframe
 				ref={ref}
 				title="Kiln Widget"
-				src="http://kiln.localhost:8081/overview"
+				src="https://iframe.widget.testnet.kiln.fi"
 				className="iframe"
 				// For copy address interactions
 				allow="clipboard-read; clipboard-write"
