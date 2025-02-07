@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { type EIP1474Methods, hexToNumber, toHex } from "viem";
 import KilnSvg from "./assets/kiln.svg";
 import "viem/window";
@@ -7,7 +7,6 @@ type WidgetRpcMethods =
 	| "eth_accounts"
 	| "eth_chainId"
 	| "wallet_switchEthereumChain"
-	| "eth_estimateGas"
 	| "eth_sendTransaction";
 
 type RpcMethod<method extends WidgetRpcMethods> = Extract<
@@ -26,71 +25,106 @@ type RpcHandlers = {
 		: () => Promise<RpcMethod<method>["ReturnType"]>;
 };
 
-const isRpcMessage = (
-	message: unknown,
-): message is { id: string; args: { method: string; params?: any[] } } => {
+/**
+ * Type of a request sent by the Widget
+ */
+type WidgetRpcRequest = {
+	id: string;
+	method: string;
+	params?: any[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+};
+
+/**
+ * Type of a response to send back to the widget
+ */
+type WidgetRpcResponse = { id: string } & (
+	| { success: true; data: unknown }
+	| { success: false; error: unknown }
+);
+
+const isValidRpcMessage = (
+	event: MessageEvent,
+): event is Omit<typeof event, "data"> & { data: WidgetRpcRequest } => {
+	const data = event.data as unknown;
 	return (
-		typeof message === "object" &&
-		message !== null &&
-		"id" in message &&
-		"args" in message &&
-		typeof message.id === "string" &&
-		typeof message.args === "object" &&
-		message.args !== null &&
-		"method" in message.args &&
-		typeof message.args.method === "string" &&
-		("params" in message.args ? Array.isArray(message.args.params) : true)
+		typeof data === "object" &&
+		data !== null &&
+		"id" in data &&
+		"method" in data &&
+		typeof data.id === "string" &&
+		typeof data.method === "string" &&
+		("params" in data ? Array.isArray(data.params) : true)
 	);
 };
 
 function App() {
 	const ref = useRef<HTMLIFrameElement>(null);
 
-	const [chainId, setChainId] = useState<number>(1);
-
-	const handlers = useMemo(
-		(): RpcHandlers => ({
-			eth_accounts: async () => {
-				return ["0x991c468AbcE2b4DD627a6210C145373EbABdd186"];
-			},
-
-			eth_chainId: async () => {
-				return toHex(chainId);
-			},
-
-			wallet_switchEthereumChain: async ({ chainId }) => {
-				setChainId(hexToNumber(chainId as `0x${string}`));
-				return null;
-			},
-
-			eth_estimateGas: async () => {
-				throw new Error("Not implemented.");
-			},
-
-			eth_sendTransaction: async () => {
-				throw new Error("Not implemented.");
-			},
-		}),
-		[chainId],
+	const walletRef = useRef<`0x${string}`>(
+		"0x991c468AbcE2b4DD627a6210C145373EbABdd186",
 	);
+
+	const chainIdRef = useRef<number>(1);
+
+	const handlersRef = useRef<RpcHandlers>({
+		/**
+		 * Get the current connected wallet
+		 */
+		eth_accounts: async () => {
+			return [walletRef.current];
+		},
+
+		/**
+		 * Get the current chain ID
+		 */
+		eth_chainId: async () => {
+			return toHex(chainIdRef.current);
+		},
+
+		/**
+		 * Handle a switch chain interraction from the Widget
+		 */
+		wallet_switchEthereumChain: async ({ chainId }) => {
+			chainIdRef.current = hexToNumber(chainId as `0x${string}`);
+			return null;
+		},
+
+		/**
+		 * Handle a sign transaction interaction from the Widget
+		 * then return the broadcasted transaction hash
+		 */
+		eth_sendTransaction: async (transaction) => {
+			void transaction;
+			throw new Error("Not implemented.");
+		},
+	});
 
 	useEffect(() => {
 		const handler = async (event: MessageEvent) => {
-			const data = event.data as unknown;
-
-			if (!isRpcMessage(data) || !ref.current?.contentWindow) {
+			if (
+				!ref.current?.contentWindow ||
+				// Check the message comes from the widget
+				event.source !== ref.current.contentWindow
+			) {
 				return;
 			}
 
-			if (!(data.args.method in handlers)) {
-				throw new Error(`Method: ${data.args.method} is not implemented.`);
+			if (!isValidRpcMessage(event)) return;
+
+			if (!(event.data.method in handlersRef.current)) {
+				throw new Error(`Method: ${event.data.method} is not implemented.`);
 			}
 
-			const id = data.id;
-			const method = data.args.method as WidgetRpcMethods;
-			const result = await handlers[method](...(data.args.params ?? []));
+			const id = event.data.id;
+			const method = event.data.method as WidgetRpcMethods;
 
-			ref.current.contentWindow.postMessage({ id, result }, "*");
+			const response: WidgetRpcResponse = await handlersRef.current[method](
+				...(event.data.params ?? []),
+			)
+				.then((data) => ({ id, success: true, data }) as const)
+				.catch((error) => ({ id, success: false, error }) as const);
+
+			ref.current.contentWindow.postMessage(response, "*");
 		};
 
 		window.addEventListener("message", handler);
@@ -98,7 +132,7 @@ function App() {
 		return () => {
 			window.removeEventListener("message", handler);
 		};
-	}, [handlers]);
+	}, []);
 
 	return (
 		<>
